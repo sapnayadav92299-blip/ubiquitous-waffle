@@ -1,0 +1,75 @@
+name: Build TITOPLAY APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find or unpack the project
+        id: proj
+        run: |
+          GR=$(find . -maxdepth 6 -name gradlew -not -path './.git/*' | head -n 1)
+          if [ -z "$GR" ]; then
+            ZIP=$(find . -maxdepth 4 -iname '*.zip' -not -path './.git/*' | head -n 1)
+            if [ -z "$ZIP" ]; then
+              echo "::error::Na gradlew mila, na koi .zip. TITOPLAY zip repo me upload karo."
+              exit 1
+            fi
+            echo "Unpacking $ZIP"
+            mkdir -p "$RUNNER_TEMP/proj"
+            unzip -q "$ZIP" -d "$RUNNER_TEMP/proj"
+            GR=$(find "$RUNNER_TEMP/proj" -maxdepth 3 -name gradlew | head -n 1)
+          fi
+          ROOT=$(cd "$(dirname "$GR")" && pwd)
+          echo "Project root: $ROOT"
+          ls "$ROOT"
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Android SDK packages
+        run: |
+          (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "platforms;android-37.0" \
+            "build-tools;36.0.0" \
+            "ndk;28.2.13676358" \
+            "cmake;3.22.1" > /dev/null
+
+      - name: Rust
+        run: |
+          rustup toolchain install stable --profile minimal \
+            --target aarch64-linux-android --target armv7-linux-androideabi
+          rustup default stable
+
+      - name: cargo-ndk
+        run: command -v cargo-ndk > /dev/null || cargo install cargo-ndk --version 4.1.2 --locked
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-home-cache-cleanup: true
+
+      - name: Build
+        working-directory: ${{ steps.proj.outputs.root }}
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDev --stacktrace || ./gradlew :app:assembleDev --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TITOPLAY-apk
+          path: ${{ steps.proj.outputs.root }}/app/build/outputs/apk/dev/*.apk
+          retention-days: 30
+          if-no-files-found: error
